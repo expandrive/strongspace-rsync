@@ -9,16 +9,16 @@ rescue LoadError
 end
 
 module Strongspace::Command
-  class Itunes < Base
+  class Rsync < Base
 
     def setup
 
       Strongspace::Command.run_internal("auth:check", nil)
 
-      display "Creating a new iTunes backup profile"
+      display "Creating a new strongspace backup profile"
       puts
-      display "iTunes Library Location [#{default_itunes_library_path}]: ", false
-      location = ask(default_itunes_library_path)
+      display "Location to backup [#{default_backup_path}]: ", false
+      location = ask(default_backup_path)
       display "Strongspace destination space [#{default_strongspace_destination}]: ", false
       strongspace_destination = ask(default_strongspace_destination)
       puts "Setting up backup from #{location} -> #{strongspace_destination}"
@@ -28,7 +28,11 @@ module Strongspace::Command
       end
 
     end
-
+    
+    def echo
+      puts command_name
+    end
+    
     def backup
 
       while not load_configuration
@@ -36,7 +40,7 @@ module Strongspace::Command
       end
 
       if not (create_pid_file(command_name, Process.pid))
-        display "The itunes backup process is already running"
+        display "The backup process is already running"
         exit(1)
       end
 
@@ -44,7 +48,7 @@ module Strongspace::Command
         launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
 
         if not launched_by.ends_with?("launchd")
-          display "iTunes library has not changed since last backup attempt."
+          display "backup target has not changed since last backup attempt."
         end
         delete_pid_file(command_name)
         exit(0)
@@ -59,10 +63,10 @@ module Strongspace::Command
         status = Open4::popen4(rsync_command) do
           |pid, stdin, stdout, stderr|
 
-          display "\n\nStarting iTunes Backup: #{Time.now}"
+          display "\n\nStarting Strongspace Backup: #{Time.now}"
 
           if not (create_pid_file("#{command_name}.rsync", pid))
-            display "Couldn't start itunes backup sync, already running?"
+            display "Couldn't start backup sync, already running?"
             eixt(1)
           end
 
@@ -96,7 +100,7 @@ module Strongspace::Command
         if status.exitstatus == 23 or status.exitstatus == 0
           num_failures = 0
           write_successful_backup_hash(new_digest)
-          display "Successfully backed up iTunes at #{Time.now}"
+          display "Successfully backed up at #{Time.now}"
           delete_pid_file(command_name)
           exit(0)
         else
@@ -131,7 +135,7 @@ module Strongspace::Command
           <key>ProgramArguments</key>
           <array>
             <string>strongspace</string>
-            <string>itunes:backup</string>
+            <string>rsync:backup</string>
           </array>
           <key>KeepAlive</key>
           <false/>
@@ -176,7 +180,7 @@ module Strongspace::Command
       if File.exist?("#{home_directory}/Library/Logs/Strongspace/#{command_name}.log")
         `open -a Console.app #{home_directory}/Library/Logs/Strongspace/#{command_name}.log`
       else
-        display "No log file has been created yet, run strongspace itunes:setup to get things going"
+        display "No log file has been created yet, run strongspace rsync:setup to get things going"
       end
     end
 
@@ -259,12 +263,12 @@ module Strongspace::Command
       #"#{home_directory}/.strongspace/bin/rsync"
     end
 
-    def default_itunes_library_path
-      "#{home_directory}/Music/iTunes"
+    def default_backup_path
+      "#{home_directory}/Documents"
     end
 
     def default_strongspace_destination
-      "/#{strongspace.username}/home/iTunes"
+      "/#{strongspace.username}/home/backup"
     end
 
   end
