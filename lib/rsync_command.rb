@@ -188,7 +188,7 @@ module Strongspace::Command
 
 
     def command_name
-      "iTunesBackup"
+      "RsyncBackup"
     end
 
     def has_library_changed?(path)
