@@ -20,17 +20,71 @@ DEBUG = false
 
 module Strongspace::Command
   class Rsync < Base
+    
+    def space_exists?(name)
+      strongspace.spaces["spaces"].each do |space|
+        # TODO: clean up the json returned by the strongspace API requests to simplify this iteration
+        space = space["space"]
+        return true if space["name"] == name
+      end
+      return false
+    end
+    
+    def is_valid_space_name?(name)
+      # For now, just make sure the space name is all "word characters," i.e. [0-9A-Za-z_]
+      return false if name =~ /\W/
+      return true
+    end
 
+    def is_backup_space?(name)
+      space = nil
+      strongspace.spaces["spaces"].each do |s|
+        s = s["space"]
+        if s["name"] == name then
+          space = s
+          break
+        end
+      end
+      return space["type"] == "backup"
+    end
+    
     def setup
 
       Strongspace::Command.run_internal("auth:check", nil)
 
       display "Creating a new strongspace backup profile"
       puts
+
+      # Source
       display "Location to backup [#{default_backup_path}]: ", false
       location = ask(default_backup_path)
-      display "Strongspace destination space [#{default_strongspace_destination}]: ", false
-      strongspace_destination = ask(default_strongspace_destination)
+      
+      # Destination
+      display "Strongspace destination space [#{default_space}]: ", false
+      space = ask(default_space)
+      
+      # TODO: this validation flow could be made more friendly
+      if !is_valid_space_name?(space) then
+        puts "Invalid space name #{space}. Aborting."
+        exit(-1)
+      end
+      
+      if !space_exists?(space) then
+        display "#{strongspace.username}/#{space} does not exist. Would you like to create it? [y]: ", false
+        if ask('y') == 'y' then
+          strongspace.create_space(space, 'backup')
+        else
+          puts "Aborting"
+          exit(-1)
+        end
+      end
+      
+      if !is_backup_space?(space) then
+        puts "#{space} is not a 'backup'-type space. Aborting."
+        exit(-1)
+      end
+      
+      strongspace_destination = "#{strongspace.username}/#{space}"
       puts "Setting up backup from #{location} -> #{strongspace_destination}"
 
       File.open(configuration_file, 'w+' ) do |out|
@@ -336,8 +390,8 @@ module Strongspace::Command
       "#{home_directory}/Documents"
     end
 
-    def default_strongspace_destination
-      "/#{strongspace.username}/home/backup"
+    def default_space
+      "backup"
     end
 
   end
