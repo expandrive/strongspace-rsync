@@ -16,6 +16,8 @@ if not (RUBY_PLATFORM =~ /mswin32|mingw32|-darwin\d/)
   end
 end
 
+DEBUG = false
+
 module Strongspace::Command
   class Rsync < Base
 
@@ -52,7 +54,7 @@ module Strongspace::Command
         exit(1)
       end
 
-      if not new_digest = has_source_changed?(@local_source_path)
+      if not new_digest = source_changed?
         launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
 
         if not launched_by.ends_with?("launchd")
@@ -63,7 +65,11 @@ module Strongspace::Command
       end
 
       rsync_command = "#{rsync_binary} -e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' --delete -avz #{@local_source_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
-
+      puts "Excludes: #{@excludes}" if DEBUG
+      for pattern in @excludes do
+        rsync_command << " --exclude \"#{pattern}\""
+      end
+      
       restart_wait = 10
       num_failures = 0
 
@@ -72,6 +78,7 @@ module Strongspace::Command
           |pid, stdin, stdout, stderr|
 
           display "\n\nStarting Strongspace Backup: #{Time.now}"
+          display "rsync command:\n\t#{rsync_command}" if DEBUG
 
           if not (create_pid_file("#{command_name}.rsync", pid))
             display "Couldn't start backup sync, already running?"
@@ -236,10 +243,11 @@ module Strongspace::Command
     def command_name
       "RsyncBackup"
     end
-
-    def has_source_changed?(path)
-      digest = recursive_digest(path)
-      changed = (existing_source_hash.strip != digest.strip)
+    
+    def source_changed?
+      digest = recursive_digest(@local_source_path)
+      digest.update(@config.hash.to_s) # also consider config changes
+      changed = (existing_source_hash.strip != digest.to_s.strip)
       if changed
         return digest
       else
@@ -253,8 +261,8 @@ module Strongspace::Command
       file.close
     end
 
-
     def recursive_digest(path)
+      # TODO: add excludes to digest computation
       digest = Digest::SHA2.new(512)
 
       Find.find(path) do |entry|
@@ -264,7 +272,7 @@ module Strongspace::Command
         end
       end
 
-      return digest.to_s
+      return digest
     end
 
     def existing_source_hash
@@ -282,14 +290,17 @@ module Strongspace::Command
 
     def load_configuration
       begin
-        @configuration_hash = YAML::load_file(configuration_file)
+        @config = YAML::load_file(configuration_file)
       rescue
         return nil
       end
 
-      @local_source_path = @configuration_hash['local_source_path']
-      @strongspace_path = @configuration_hash['strongspace_path']
-
+      @local_source_path = @config['local_source_path']
+      @strongspace_path = @config['strongspace_path']
+      @excludes = []
+      @excludes = @config['excludes'] if @config.has_key? 'excludes'
+      
+      return true
     end
 
     def log_file
