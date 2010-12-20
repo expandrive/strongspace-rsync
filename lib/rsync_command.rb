@@ -32,7 +32,7 @@ module Strongspace::Command
       puts "Setting up backup from #{location} -> #{strongspace_destination}"
 
       File.open(configuration_file, 'w+' ) do |out|
-        YAML.dump({'local_library_path' => location, 'strongspace_path' => "/strongspace#{strongspace_destination}"}, out)
+        YAML.dump({'local_source_path' => location, 'strongspace_path' => "/strongspace/#{strongspace_destination}"}, out)
       end
 
     end
@@ -52,7 +52,7 @@ module Strongspace::Command
         exit(1)
       end
 
-      if not new_digest = has_library_changed?(@local_library_path)
+      if not new_digest = has_source_changed?(@local_source_path)
         launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
 
         if not launched_by.ends_with?("launchd")
@@ -62,7 +62,7 @@ module Strongspace::Command
         exit(0)
       end
 
-      rsync_command = "#{rsync_binary} -e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' --delete -avz #{@local_library_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
+      rsync_command = "#{rsync_binary} -e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' --delete -avz #{@local_source_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
 
       restart_wait = 10
       num_failures = 0
@@ -237,9 +237,9 @@ module Strongspace::Command
       "RsyncBackup"
     end
 
-    def has_library_changed?(path)
+    def has_source_changed?(path)
       digest = recursive_digest(path)
-      changed = (existing_library_hash.strip != digest.strip)
+      changed = (existing_source_hash.strip != digest.strip)
       if changed
         return digest
       else
@@ -248,7 +248,7 @@ module Strongspace::Command
     end
 
     def write_successful_backup_hash(digest)
-      file = File.new(library_hash_file, "w+")
+      file = File.new(source_hash_file, "w+")
       file.puts "#{digest}"
       file.close
     end
@@ -267,9 +267,9 @@ module Strongspace::Command
       return digest.to_s
     end
 
-    def existing_library_hash
-      if File.exist?(library_hash_file)
-        f = File.open(library_hash_file)
+    def existing_source_hash
+      if File.exist?(source_hash_file)
+        f = File.open(source_hash_file)
         existing_hash = f.gets
         f.close
         return existing_hash
@@ -287,7 +287,7 @@ module Strongspace::Command
         return nil
       end
 
-      @local_library_path = @configuration_hash['local_library_path']
+      @local_source_path = @configuration_hash['local_source_path']
       @strongspace_path = @configuration_hash['strongspace_path']
 
     end
@@ -308,7 +308,7 @@ module Strongspace::Command
       "#{launchd_agents_folder}/com.strongspace.#{command_name}.pist"
     end
 
-    def library_hash_file
+    def source_hash_file
       "#{home_directory}/.strongspace/#{command_name}.lastbackup"
     end
 
