@@ -8,6 +8,14 @@ rescue LoadError
   raise "open4 gem is missing.  Please install open4: sudo gem install open4"
 end
 
+if not (RUBY_PLATFORM =~ /mswin32|mingw32|-darwin\d/)
+  begin
+    require 'cronedit'
+  rescue LoadError
+    raise "cronedit gem is missing.  Please install open4: sudo gem install cronedit"
+  end
+end
+
 module Strongspace::Command
   class Rsync < Base
 
@@ -120,51 +128,81 @@ module Strongspace::Command
     end
 
     def schedule_backup
-      if not File.exist?("#{home_directory}/Library/Logs/Strongspace/")
-        FileUtils.mkdir("#{home_directory}/Library/Logs/Strongspace/")
+      if not File.exist?(logs_folder)
+        FileUtils.mkdir(logs_folder)
       end
-      plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-      <!DOCTYPE plist PUBLIC -//Apple Computer//DTD PLIST 1.0//EN
-      http://www.apple.com/DTDs/PropertyList-1.0.dtd >
-      <plist version=\"1.0\">
-      <dict>
-          <key>Label</key>
-          <string>com.strongspace.#{command_name}</string>
-          <key>Program</key>
-          <string>#{$PROGRAM_NAME}</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>strongspace</string>
-            <string>rsync:backup</string>
-          </array>
-          <key>KeepAlive</key>
-          <false/>
-          <key>StartInterval</key>
-          <integer>60</integer>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>StandardOutPath</key>
-          <string>#{home_directory}/Library/Logs/Strongspace/#{command_name}.log</string>
-          <key>StandardErrorPath</key>
-          <string>#{home_directory}/Library/Logs/Strongspace/#{command_name}.log</string>
-      </dict>
-      </plist>"
 
-      file = File.new(launchd_plist_file, "w+")
-      file.puts plist
-      file.close
+      if running_on_windows?
+        error "Scheduling currently isn't supported on Windows"
+        return
+      end
 
-      r = `launchctl load -S aqua #{launchd_plist_file}`
-      if r.strip.ends_with?("Already loaded")
-        error "This task is aready scheduled, unload before scheduling again"
-      else
+      if running_on_a_mac?
+        plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+        <!DOCTYPE plist PUBLIC -//Apple Computer//DTD PLIST 1.0//EN
+        http://www.apple.com/DTDs/PropertyList-1.0.dtd >
+        <plist version=\"1.0\">
+        <dict>
+            <key>Label</key>
+            <string>com.strongspace.#{command_name}</string>
+            <key>Program</key>
+            <string>#{$PROGRAM_NAME}</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>strongspace</string>
+              <string>rsync:backup</string>
+            </array>
+            <key>KeepAlive</key>
+            <false/>
+            <key>StartInterval</key>
+            <integer>60</integer>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>StandardOutPath</key>
+            <string>#{log_file}</string>
+            <key>StandardErrorPath</key>
+            <string>#{log_file}</string>
+        </dict>
+        </plist>"
+
+        file = File.new(launchd_plist_file, "w+")
+        file.puts plist
+        file.close
+
+        r = `launchctl load -S aqua #{launchd_plist_file}`
+        if r.strip.ends_with?("Already loaded")
+          error "This task is aready scheduled, unload before scheduling again"
+          return
+        end
         display "Scheduled #{command_name} to be run continuously"
+      else  # Assume we're running on linux/unix
+        begin
+          CronEdit::Crontab.Add  "strongspace-#{command_name}", "0,5,10,15,20,25,30,35,40,45,52,53,55 * * * * #{$PROGRAM_NAME} rsync:backup >> #{log_file} 2>&1"
+        rescue Exception => e
+          error "Error setting up schedule: #{e.message}"
+        end
+        display "Scheduled #{command_name} to be run every five minutes"
       end
+
+
+
     end
 
     def unschedule_backup
-      `launchctl unload #{launchd_plist_file}`
-      FileUtils.rm(launchd_plist_file)
+      if running_on_windows?
+        error "Scheduling currently isn't supported on Windows"
+        return
+      end
+
+      if running_on_a_mac?
+        `launchctl unload #{launchd_plist_file}`
+        FileUtils.rm(launchd_plist_file)
+      else  # Assume we're running on linux/unix
+        CronEdit::Crontab.Remove "strongspace-#{command_name}"
+      end
+
+      display "Unscheduled continuous backup"
+
     end
 
     def backup_scheduled?
@@ -177,8 +215,16 @@ module Strongspace::Command
     end
 
     def logs
-      if File.exist?("#{home_directory}/Library/Logs/Strongspace/#{command_name}.log")
-        `open -a Console.app #{home_directory}/Library/Logs/Strongspace/#{command_name}.log`
+      if File.exist?(log_file)
+        if running_on_windows?
+          error "Scheduling currently isn't supported on Windows"
+          return
+        end
+        if running_on_a_mac?
+          `open -a Console.app #{log_file}`
+        else
+          system("/usr/bin/less less #{log_file}")
+        end
       else
         display "No log file has been created yet, run strongspace rsync:setup to get things going"
       end
@@ -244,6 +290,18 @@ module Strongspace::Command
       @local_library_path = @configuration_hash['local_library_path']
       @strongspace_path = @configuration_hash['strongspace_path']
 
+    end
+
+    def log_file
+      "#{logs_folder}/#{command_name}.log"
+    end
+
+    def logs_folder
+      if running_on_a_mac?
+        "#{home_directory}/Library/Logs/Strongspace/"
+      else
+        "#{home_directory}/.strongspace/logs"
+      end
     end
 
     def launchd_plist_file
