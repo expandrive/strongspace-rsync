@@ -13,6 +13,6 @@ Upgrade/Install the Strongspace gem to v0.0.9 or newer:
     `sudo gem install strongspace`
 
 Install the Strongspace Rsync plugin
-    `strongspace plugins:install git://github.com/minrk/strongspace-rsync.git`
+    `strongspace plugins:install git://github.com/expandrive/strongspace-rsync.git`
 
 See the [iTunes Plugin](https://github.com/expandrive/strongspace-itunes) for usage info, and anywhere you see 'itunes:' replace with 'rsync:'.
