@@ -117,8 +117,12 @@ module Strongspace::Command
         delete_pid_file(command_name)
         exit(0)
       end
-
-      rsync_command = "#{rsync_binary} -e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' --delete -avz #{@local_source_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
+      
+      rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
+      rsync_flags << "-avz "
+      rsync_flags << "--delete " unless @keep_remote_files
+      rsync_flags << "--partial --progress" if @progressive_transfer
+      rsync_command = "#{rsync_binary}  #{rsync_flags} #{@local_source_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
       puts "Excludes: #{@excludes}" if DEBUG
       for pattern in @excludes do
         rsync_command << " --exclude \"#{pattern}\""
@@ -351,6 +355,8 @@ module Strongspace::Command
 
       @local_source_path = @config['local_source_path']
       @strongspace_path = @config['strongspace_path']
+      @keep_remote_files = @config['keep_remote_files']
+      @progressive_transfer = @config['progressive_transfer']
       @excludes = []
       @excludes = @config['excludes'] if @config.has_key? 'excludes'
       
