@@ -1,149 +1,110 @@
 require 'yaml'
 require 'find'
 require 'digest'
-
-begin
-  require 'open4'
-rescue LoadError
-  raise "open4 gem is missing.  Please install open4: sudo gem install open4"
-end
-
-if not (RUBY_PLATFORM =~ /mswin32|mingw32|-darwin\d/)
-  begin
-    require 'cronedit'
-  rescue LoadError
-    raise "cronedit gem is missing.  Please install open4: sudo gem install cronedit"
-  end
-end
+require 'open4'
+require 'cronedit'
 
 DEBUG = false
 
 module Strongspace::Command
   class Rsync < Base
-    
-    def space_exists?(name)
-      strongspace.spaces["spaces"].each do |space|
-        # TODO: clean up the json returned by the strongspace API requests to simplify this iteration
-        space = space["space"]
-        return true if space["name"] == name
-      end
-      return false
-    end
-    
-    def is_valid_space_name?(name)
-      # For now, just make sure the space name is all "word characters," i.e. [0-9A-Za-z_]
-      return false if name =~ /\W/
-      return true
+    VERSION = "0.0.2"
+
+    # Display the version of the plugin and also return it
+    def version
+      display "#{command_name} v#{VERSION}"
+      VERSION
     end
 
-    def is_backup_space?(name)
-      space = nil
-      strongspace.spaces["spaces"].each do |s|
-        s = s["space"]
-        if s["name"] == name then
-          space = s
-          break
-        end
+    # Displays a list of the available rsync profiles
+    def list
+      display "Available rsync backup profiles:"
+
+      if profiles(reload=true).blank?
+        return []
       end
-      return space["type"] == "backup"
+
+      profiles.each do |key, value|
+        display key
+      end
+
     end
-    
-    def setup
+
+    # create a new profile by prompting the user
+    def create
+      if args.blank?
+        error "Please supply the name for the profile you'd like to create"
+      end
 
       Strongspace::Command.run_internal("auth:check", nil)
 
-      display "Creating a new strongspace backup profile"
-      puts
+      display "Creating a new strongspace backup profile named #{args.first}"
 
-      # Source
-      display "Location to backup [#{default_backup_path}]: ", false
-      location = ask(default_backup_path)
-      
-      # Destination
-      display "Strongspace destination space [#{default_space}]: ", false
-      space = ask(default_space)
-      
-      # TODO: this validation flow could be made more friendly
-      if !is_valid_space_name?(space) then
-        puts "Invalid space name #{space}. Aborting."
-        exit(-1)
-      end
-      
-      if !space_exists?(space) then
-        display "#{strongspace.username}/#{space} does not exist. Would you like to create it? [y]: ", false
-        if ask('y') == 'y' then
-          strongspace.create_space(space, 'backup')
-        else
-          puts "Aborting"
-          exit(-1)
-        end
-      end
-      
-      if !is_backup_space?(space) then
-        puts "#{space} is not a 'backup'-type space. Aborting."
-        exit(-1)
-      end
-      
-      strongspace_destination = "#{strongspace.username}/#{space}"
-      puts "Setting up backup from #{location} -> #{strongspace_destination}"
+      new_profile = ask_for_new_rsync_profile
 
-      File.open(configuration_file, 'w+' ) do |out|
-        YAML.dump({'local_source_path' => location, 'strongspace_path' => "/strongspace/#{strongspace_destination}"}, out)
-      end
-
+      save_profiles(profiles.merge(new_profile))
     end
-    
-    def echo
-      puts command_name
-    end
-    
-    def backup
+    alias :setup :create
 
-      while not load_configuration
-        setup
+    # delete a profile by prompting the user
+    def delete
+
+      profile_name = args.first
+      profile = profiles[profile_name]
+
+      if profile.blank?
+        display "Please supply the name of the profile you'd like to delete"
+        self.list
+        return false
+      end
+      profiles.delete(profile_name)
+      save_profiles(profiles)
+      display "#{profile_name} has been deleted"
+    end
+
+    # run a specific rsync backup profile
+    def run
+      profile_name = args.first
+      profile = profiles[profile_name]
+
+      if profile.blank?
+        display "Please supply the name of the profile you'd like to run"
+        self.list
+        return false
       end
 
-      if not (create_pid_file(command_name, Process.pid))
-        display "The backup process is already running"
+      if not (create_pid_file("#{command_name_with_profile_name(profile_name)}", Process.pid))
+        display "The backup process for #{profile_name} is already running"
         exit(1)
       end
 
-      if not new_digest = source_changed?
+      if not new_digest = source_changed?(profile_name,profile)
         launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
 
         if not launched_by.ends_with?("launchd")
           display "backup target has not changed since last backup attempt."
         end
-        delete_pid_file(command_name)
+        delete_pid_file("#{command_name_with_profile_name(profile_name)}")
         exit(0)
       end
-      
-      rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
-      rsync_flags << "-avz "
-      rsync_flags << "--delete " unless @keep_remote_files
-      rsync_flags << "--partial --progress" if @progressive_transfer
-      rsync_command = "#{rsync_binary}  #{rsync_flags} #{@local_source_path}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{@strongspace_path}/"
-      puts "Excludes: #{@excludes}" if DEBUG
-      for pattern in @excludes do
-        rsync_command << " --exclude \"#{pattern}\""
-      end
-      
+
+
       restart_wait = 10
       num_failures = 0
 
       while true do
-        status = Open4::popen4(rsync_command) do
+        status = Open4::popen4(rsync_command(profile)) do
           |pid, stdin, stdout, stderr|
 
           display "\n\nStarting Strongspace Backup: #{Time.now}"
-          display "rsync command:\n\t#{rsync_command}" if DEBUG
+          display "rsync command:\n\t#{rsync_command(profile)}" if DEBUG
 
-          if not (create_pid_file("#{command_name}.rsync", pid))
+          if not (create_pid_file("#{command_name_with_profile_name(profile_name)}.rsync", pid))
             display "Couldn't start backup sync, already running?"
             exit(1)
           end
 
-          sleep(5)
+          sleep(5) if num_failures
           threads = []
 
 
