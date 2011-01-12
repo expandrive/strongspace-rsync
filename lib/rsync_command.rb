@@ -3,6 +3,7 @@ require 'find'
 require 'digest'
 require 'open4'
 require 'cronedit'
+require 'date'
 
 DEBUG = false
 
@@ -28,6 +29,7 @@ module Strongspace::Command
         display key
       end
 
+      return profiles
     end
 
     # create a new profile by prompting the user
@@ -84,8 +86,12 @@ module Strongspace::Command
         if not launched_by.ends_with?("launchd")
           display "backup target has not changed since last backup attempt."
         end
+
+        profile['last_successful_backup'] = DateTime.now.to_s
+        save_profiles(profiles.merge({profile_name => profile}))
+
         delete_pid_file("#{command_name_with_profile_name(profile_name)}")
-        exit(0)
+        return
       end
 
 
@@ -135,7 +141,13 @@ module Strongspace::Command
           num_failures = 0
           write_successful_backup_hash(profile_name, new_digest)
           display "Successfully backed up at #{Time.now}"
+
+          profile['last_successful_backup'] = DateTime.now.to_s
+          save_profiles(profiles.merge({profile_name => profile}))
+
+
           delete_pid_file("#{command_name_with_profile_name(profile_name)}")
+
           return true
         else
           display "Error backing up - trying #{3-num_failures} more times"
@@ -258,16 +270,17 @@ module Strongspace::Command
       profile = profiles[profile_name]
 
       if profile.blank?
-        display "Please supply the name of the profile you'd like to unschedule"
+        display "Please supply the name of the profile you'd like to query"
         self.list
         return false
       end
 
-      r = `launchctl list com.strongspace.#{command_name}.#{profile_name}`
-      if r.ends_with?("unknown response")
-        display "#{command_name} isn't currently scheduled"
+      r = `launchctl list com.strongspace.#{command_name}.#{profile_name} 2>&1`
+
+      if r.ends_with?("unknown response\n")
+        display "#{profile_name} isn't currently scheduled"
       else
-        display "#{command_name} is currently scheduled for continuous backup"
+        display "#{profile_name} is scheduled for continuous backup"
       end
     end
 
@@ -288,6 +301,9 @@ module Strongspace::Command
     end
 
 
+    def _profiles
+      profiles
+    end
 
     private
 
@@ -348,7 +364,14 @@ module Strongspace::Command
       rsync_flags << "-avz "
       rsync_flags << "--delete " unless profile['keep_remote_files']
       rsync_flags << "--partial --progress" if profile['progressive_transfer']
-      rsync_command_string = "#{rsync_binary}  #{rsync_flags} #{profile['local_source_path']}/ #{strongspace.username}@#{strongspace.username}.strongspace.com:#{profile['strongspace_path']}/"
+
+      local_source_path = profile['local_source_path']
+
+      if not File.file?(local_source_path)
+        local_source_path = "#{local_source_path}/"
+      end
+
+      rsync_command_string = "#{rsync_binary}  #{rsync_flags} #{local_source_path} #{strongspace.username}@#{strongspace.username}.strongspace.com:#{profile['strongspace_path']}/"
       puts "Excludes: #{profile['excludes']}" if DEBUG
 
       if profile['excludes']
@@ -362,7 +385,7 @@ module Strongspace::Command
 
     def source_changed?(profile_name, profile)
       digest = recursive_digest(profile['local_source_path'])
-      digest.update(profile.hash.to_s) # also consider config changes
+      #digest.update(profile.hash.rto_s) # also consider config changes
       changed = (existing_source_hash(profile_name).strip != digest.to_s.strip)
       if changed
         return digest
