@@ -9,7 +9,7 @@ DEBUG = false
 
 module Strongspace::Command
   class Rsync < Base
-    VERSION = "0.0.2"
+    VERSION = "0.1.0"
 
     # Display the version of the plugin and also return it
     def version
@@ -167,6 +167,26 @@ module Strongspace::Command
     end
     alias :backup :run
 
+    def running?
+      profile_name = args.first
+      profile = profiles[profile_name]
+
+      if profile.blank?
+        display "Please supply the name of the profile you'd like to query"
+        self.list
+        return false
+      end
+
+      if process_running?("#{command_name_with_profile_name(profile_name)}")
+        display "#{profile_name} is currently running"
+        return true
+      else
+        display "#{profile_name} is not currently running"
+        return false
+      end
+
+      return false
+    end
 
     def schedule
       profile_name = args.first
@@ -213,6 +233,14 @@ module Strongspace::Command
             <string>#{log_file}</string>
             <key>StandardErrorPath</key>
             <string>#{log_file}</string>
+            <key>EnvironmentVariables</key>
+            <dict>
+              <key>GEM_PATH</key>
+              <string>#{support_directory}/gems</string>
+              <key>GEM_HOME</key>
+              <string>#{support_directory}/gems</string>
+            </dict>
+
         </dict>
         </plist>"
 
@@ -254,8 +282,10 @@ module Strongspace::Command
       end
 
       if running_on_a_mac?
-        `launchctl unload #{launchd_plist_file(profile_name)}`
-        FileUtils.rm(launchd_plist_file(profile_name))
+        if File.exist? launchd_plist_file(profile_name)
+          `launchctl unload #{launchd_plist_file(profile_name)}`
+          FileUtils.rm(launchd_plist_file(profile_name))
+        end
       else  # Assume we're running on linux/unix
         CronEdit::Crontab.Remove "strongspace-#{command_name}-#{profile_name}"
       end
@@ -279,9 +309,12 @@ module Strongspace::Command
 
       if r.ends_with?("unknown response\n")
         display "#{profile_name} isn't currently scheduled"
+        return false
       else
         display "#{profile_name} is scheduled for continuous backup"
+        return true
       end
+
     end
 
     def logs
@@ -313,39 +346,45 @@ module Strongspace::Command
       # Name
       name = args.first
 
-      # Source
-      display "Location to backup [#{default_backup_path}]: ", false
-      location = ask(default_backup_path)
+      if args[1].blank? and args[2].blank?
+        # Source
+        display "Location to backup [#{default_backup_path}]: ", false
+        location = ask(default_backup_path)
 
-      # Destination
-      display "Strongspace destination space [#{default_space}]: ", false
-      space = ask(default_space)
+        # Destination
+        display "Strongspace destination space [#{default_space}]: ", false
+        space = ask(default_space)
+      else
+        location = args[1]
+        space = args[2]
+      end
 
-      validate_destination_space(space)
+      validate_destination_space(space, create=true)
 
       strongspace_destination = "#{strongspace.username}/#{space}"
 
       return {name => {'local_source_path' => location, 'strongspace_path' => "/strongspace/#{strongspace_destination}" } }
     end
 
-    def validate_destination_space(space)
+    def validate_destination_space(space, create=false)
       # TODO: this validation flow could be made more friendly
-      if !valid_space_name?(space) then
+      if !valid_space_name?(space)
         puts "Invalid space name #{space}. Aborting."
         exit(-1)
       end
 
-      if !space_exist?(space) then
-        display "#{strongspace.username}/#{space} does not exist. Would you like to create it? [y]: ", false
-        if ask('y') == 'y' then
-          strongspace.create_space(space, 'backup')
-        else
-          puts "Aborting"
-          exit(-1)
+      if !space_exist?(space)
+        if not create
+          display "#{strongspace.username}/#{space} does not exist. Would you like to create it? [y]: ", false
+          if ask('y') != 'y'
+            puts "Aborting"
+            exit(-1)
+          end
         end
+        strongspace.create_space(space, 'backup')
       end
 
-      if !backup_space?(space) then
+      if !backup_space?(space)
         puts "#{space} is not a 'backup'-type space. Aborting."
         exit(-1)
       end
@@ -360,7 +399,13 @@ module Strongspace::Command
     end
 
     def rsync_command(profile)
-      rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
+      puts self.gui_ssh_key
+
+      if File.exist? self.gui_ssh_key
+        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1 -o PreferredAuthentications=publickey -i #{self.gui_ssh_key}' "
+      else
+        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
+      end
       rsync_flags << "-avz "
       rsync_flags << "--delete " unless profile['keep_remote_files']
       rsync_flags << "--partial --progress" if profile['progressive_transfer']
@@ -372,6 +417,8 @@ module Strongspace::Command
       end
 
       rsync_command_string = "#{rsync_binary}  #{rsync_flags} #{local_source_path} #{strongspace.username}@#{strongspace.username}.strongspace.com:#{profile['strongspace_path']}/"
+      puts rsync_command_string
+
       puts "Excludes: #{profile['excludes']}" if DEBUG
 
       if profile['excludes']
@@ -459,7 +506,7 @@ module Strongspace::Command
       if running_on_a_mac?
         "#{home_directory}/Library/Logs/Strongspace"
       else
-        "#{home_directory}/.strongspace/logs"
+        "#{support_directory}/logs"
       end
     end
 
@@ -468,16 +515,16 @@ module Strongspace::Command
     end
 
     def source_hash_file(profile_name)
-      "#{home_directory}/.strongspace/#{command_name_with_profile_name(profile_name)}.lastbackup"
+      "#{support_directory}/#{command_name_with_profile_name(profile_name)}.lastbackup"
     end
 
     def configuration_file
-      "#{home_directory}/.strongspace/#{command_name}.config"
+      "#{support_directory}/#{command_name}.config"
     end
 
     def rsync_binary
       "rsync"
-      #"#{home_directory}/.strongspace/bin/rsync"
+      #"#{support_directory}/bin/rsync"
     end
 
     def default_backup_path
