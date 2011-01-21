@@ -1,0 +1,33 @@
+PATH
+  remote: .
+  specs:
+    strongspace-rsync (0.2.0)
+      strongspace (~> 0.2.0)
+
+GEM
+  remote: http://rubygems.org/
+  specs:
+    cronedit (0.3.0)
+    json_pure (1.4.6)
+    mime-types (1.16)
+    open4 (1.0.1)
+    rack (1.2.1)
+    rest-client (1.6.1)
+      mime-types (>= 1.16)
+    sinatra (1.1.2)
+      rack (~> 1.1)
+      tilt (~> 1.2)
+    strongspace (0.2.0)
+      cronedit
+      json_pure (< 1.5.0)
+      open4
+      rest-client (< 1.7.0)
+      sinatra
+    tilt (1.2.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  strongspace (~> 0.2.0)
+  strongspace-rsync!
