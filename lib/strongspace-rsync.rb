@@ -1,0 +1,12 @@
+require 'yaml'
+require 'find'
+require 'digest'
+require 'open4'
+require 'cronedit'
+require 'date'
+
+require File.dirname(__FILE__) + '/strongspace-rsync/version'
+require File.dirname(__FILE__) + '/strongspace-rsync/helpers'
+require File.dirname(__FILE__) + '/strongspace-rsync/config'
+require File.dirname(__FILE__) + '/strongspace-rsync/commands/rsync_command'
+require File.dirname(__FILE__) + '/strongspace-rsync/help'

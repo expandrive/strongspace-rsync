@@ -1,5 +1,5 @@
 $:.unshift File.expand_path("../lib", __FILE__)
-require "version"
+require "strongspace-rsync/version"
 
 Gem::Specification.new do |gem|
   gem.name    = "strongspace-rsync"
@@ -15,6 +15,12 @@ Gem::Specification.new do |gem|
 
   gem.files = Dir["**/*"].select { |d| d =~ %r{^(README|bin/|data/|ext/|lib/|spec/|test/)} }
 
-  gem.add_dependency "strongspace", "~> 0.2.0"
-
+  gem.add_development_dependency "rake"
+  gem.add_development_dependency "ZenTest"
+  gem.add_development_dependency "autotest-growl"
+  gem.add_development_dependency "autotest-fsevent"
+  gem.add_development_dependency "rspec",   "~> 1.3.0"
+  gem.add_development_dependency "webmock", "~> 1.5.0"
+  gem.add_development_dependency "ruby-fsevent"
+  gem.add_development_dependency "strongspace", "~> 0.2.0"
 end

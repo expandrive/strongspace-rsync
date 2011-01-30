@@ -2,18 +2,27 @@ PATH
   remote: .
   specs:
     strongspace-rsync (0.2.0)
-      strongspace (~> 0.2.0)
+      strongspace
 
 GEM
   remote: http://rubygems.org/
   specs:
+    ZenTest (4.4.2)
+    addressable (2.2.3)
+    autotest-fsevent (0.2.4)
+      sys-uname
+    autotest-growl (0.2.9)
+    crack (0.1.8)
     cronedit (0.3.0)
     json_pure (1.4.6)
     mime-types (1.16)
     open4 (1.0.1)
     rack (1.2.1)
+    rake (0.8.7)
     rest-client (1.6.1)
       mime-types (>= 1.16)
+    rspec (1.3.1)
+    ruby-fsevent (0.2.1)
     sinatra (1.1.2)
       rack (~> 1.1)
       tilt (~> 1.2)
@@ -23,11 +32,22 @@ GEM
       open4
       rest-client (< 1.7.0)
       sinatra
+    sys-uname (0.8.5)
     tilt (1.2.2)
+    webmock (1.5.0)
+      addressable (>= 2.2.2)
+      crack (>= 0.1.7)
 
 PLATFORMS
   ruby
 
 DEPENDENCIES
-  strongspace (~> 0.2.0)
+  ZenTest
+  autotest-fsevent
+  autotest-growl
+  rake
+  rspec (~> 1.3.0)
+  ruby-fsevent
+  strongspace
   strongspace-rsync!
+  webmock (~> 1.5.0)

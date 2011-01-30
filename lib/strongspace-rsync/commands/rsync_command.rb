@@ -1,32 +1,26 @@
-require 'yaml'
-require 'find'
-require 'digest'
-require 'open4'
-require 'cronedit'
-require 'date'
-
-DEBUG = false
-
 module Strongspace::Command
+  DEBUG = false
+
   class Rsync < Base
-    VERSION = "0.1.0"
+    include StrongspaceRsync::Helpers
+    include StrongspaceRsync::Config
 
     # Display the version of the plugin and also return it
     def version
-      display "#{command_name} v#{VERSION}"
-      VERSION
+      display "#{command_name} v#{StrongspaceRsync::VERSION}"
+      StrongspaceRsync::VERSION
     end
 
     # Displays a list of the available rsync profiles
     def list
       display "Available rsync backup profiles:"
 
-      if profiles(reload=true).blank?
+      if profiles.blank?
         return []
       end
 
-      profiles.each do |key, value|
-        display key
+      profiles.each do |profile|
+        display profile['name']
       end
 
       return profiles
@@ -40,34 +34,40 @@ module Strongspace::Command
 
       Strongspace::Command.run_internal("auth:check", nil)
 
-      display "Creating a new strongspace backup profile named #{args.first}"
-
       new_profile = ask_for_new_rsync_profile
 
-      save_profiles(profiles.merge(new_profile))
+      add_profile(new_profile)
     end
     alias :setup :create
 
     # delete a profile by prompting the user
     def delete
-
-      profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(args.first)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to delete"
         self.list
         return false
       end
-      profiles.delete(profile_name)
-      save_profiles(profiles)
-      display "#{profile_name} has been deleted"
+
+      if args[1] == "yes"
+        puts profile['strongspace_path'][12..-1]
+        begin
+          strongspace.rm(profile['strongspace_path'][12..-1])
+        rescue
+        end
+      end
+
+      delete_profile(profile)
+
+
+      display "#{args.first} has been deleted"
     end
 
     # run a specific rsync backup profile
     def run
       profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(profile_name)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to run"
@@ -80,6 +80,15 @@ module Strongspace::Command
         exit(1)
       end
 
+      if profile['last_successful_backup'].blank?
+        validate_destination_space(profile['strongspace_path'].split("/")[3], create=true)
+        begin
+          strongspace.mkdir("/#{strongspace.username}/#{hostname}#{profile['local_source_path']}")
+        rescue RestClient::Conflict => e
+        end
+      end
+
+
       if not new_digest = source_changed?(profile_name,profile)
         launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
 
@@ -87,8 +96,11 @@ module Strongspace::Command
           display "backup target has not changed since last backup attempt."
         end
 
+
+        profile = profile_by_name(profile_name)
         profile['last_successful_backup'] = DateTime.now.to_s
-        save_profiles(profiles.merge({profile_name => profile}))
+
+        update_profile(profile_name, profile)
 
         delete_pid_file("#{command_name_with_profile_name(profile_name)}")
         return
@@ -139,12 +151,14 @@ module Strongspace::Command
 
         if status.exitstatus == 23 or status.exitstatus == 0
           num_failures = 0
-          write_successful_backup_hash(profile_name, new_digest)
           display "Successfully backed up at #{Time.now}"
 
-          profile['last_successful_backup'] = DateTime.now.to_s
-          save_profiles(profiles.merge({profile_name => profile}))
+          profiles = profile_by_name(profile_name)
 
+          profile['last_successful_backup_hash'] = new_digest
+          profile['last_successful_backup'] = DateTime.now.to_s
+
+          update_profile(profile_name, profile)
 
           delete_pid_file("#{command_name_with_profile_name(profile_name)}")
 
@@ -169,7 +183,7 @@ module Strongspace::Command
 
     def running?
       profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(profile_name)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to query"
@@ -190,7 +204,7 @@ module Strongspace::Command
 
     def schedule
       profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(profile_name)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to schedule"
@@ -216,7 +230,7 @@ module Strongspace::Command
             <key>Label</key>
             <string>com.strongspace.#{command_name_with_profile_name(profile_name)}</string>
             <key>Program</key>
-            <string>#{$PROGRAM_NAME}</string>
+            <string>#{support_directory}/gems/bin/strongspace</string>
             <key>ProgramArguments</key>
             <array>
               <string>strongspace</string>
@@ -239,6 +253,8 @@ module Strongspace::Command
               <string>#{support_directory}/gems</string>
               <key>GEM_HOME</key>
               <string>#{support_directory}/gems</string>
+              <key>RACK_ENV</key>
+              <string>production</string>
             </dict>
 
         </dict>
@@ -248,11 +264,14 @@ module Strongspace::Command
         file.puts plist
         file.close
 
-        r = `launchctl load -S aqua #{launchd_plist_file(profile_name)}`
+        r = `launchctl load -S aqua '#{launchd_plist_file(profile_name)}'`
         if r.strip.ends_with?("Already loaded")
           error "This task is aready scheduled, unload before scheduling again"
           return
         end
+
+        Strongspace::Command.run_internal("spaces:schedule_snapshots", [profile['strongspace_path'].split("/")[3]])
+
         display "Scheduled #{profile_name} to be run continuously"
       else  # Assume we're running on linux/unix
         begin
@@ -268,7 +287,7 @@ module Strongspace::Command
 
     def unschedule
       profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(profile_name)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to unschedule"
@@ -283,7 +302,7 @@ module Strongspace::Command
 
       if running_on_a_mac?
         if File.exist? launchd_plist_file(profile_name)
-          `launchctl unload #{launchd_plist_file(profile_name)}`
+          `launchctl unload '#{launchd_plist_file(profile_name)}'`
           FileUtils.rm(launchd_plist_file(profile_name))
         end
       else  # Assume we're running on linux/unix
@@ -297,7 +316,7 @@ module Strongspace::Command
 
     def scheduled?
       profile_name = args.first
-      profile = profiles[profile_name]
+      profile = profile_by_name(profile_name)
 
       if profile.blank?
         display "Please supply the name of the profile you'd like to query"
@@ -305,7 +324,7 @@ module Strongspace::Command
         return false
       end
 
-      r = `launchctl list com.strongspace.#{command_name}.#{profile_name} 2>&1`
+      r = `launchctl list 'com.strongspace.#{command_name}.#{profile_name}' 2>&1`
 
       if r.ends_with?("unknown response\n")
         display "#{profile_name} isn't currently scheduled"
@@ -334,10 +353,6 @@ module Strongspace::Command
     end
 
 
-    def _profiles
-      profiles
-    end
-
     private
 
 
@@ -346,32 +361,31 @@ module Strongspace::Command
       # Name
       name = args.first
 
+      if profile_by_name(name)
+        display "This backup name is already in use"
+        return
+      end
+
+      display "Creating a new strongspace backup profile named #{args.first}"
+
       if args[1].blank? and args[2].blank?
         # Source
         display "Location to backup [#{default_backup_path}]: ", false
         location = ask(default_backup_path)
 
         # Destination
-        display "Strongspace destination space [#{default_space}]: ", false
-        space = ask(default_space)
+        display "Strongspace destination [/strongspace/#{strongspace.username}/#{hostname}#{location}]: ", false
+        dest = ask("/strongspace/#{strongspace.username}/#{hostname}#{location}")
       else
         location = args[1]
-        space = args[2]
+        dest = args[2]
       end
 
-      validate_destination_space(space, create=true)
-
-      strongspace_destination = "#{strongspace.username}/#{space}"
-
-      return {name => {'local_source_path' => location, 'strongspace_path' => "/strongspace/#{strongspace_destination}" } }
+      return {'name' => name, 'local_source_path' => location, 'strongspace_path' => dest }
     end
 
     def validate_destination_space(space, create=false)
       # TODO: this validation flow could be made more friendly
-      if !valid_space_name?(space)
-        puts "Invalid space name #{space}. Aborting."
-        exit(-1)
-      end
 
       if !space_exist?(space)
         if not create
@@ -388,21 +402,13 @@ module Strongspace::Command
         puts "#{space} is not a 'backup'-type space. Aborting."
         exit(-1)
       end
-    end
 
-    def command_name
-      "RsyncBackup"
-    end
-
-    def command_name_with_profile_name(profile_name)
-      "#{command_name}.#{profile_name}"
     end
 
     def rsync_command(profile)
-      puts self.gui_ssh_key
 
       if File.exist? self.gui_ssh_key
-        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1 -o PreferredAuthentications=publickey -i #{self.gui_ssh_key}' "
+        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1 -o UserKnownHostsFile=#{credentials_folder}/known_hosts -o PreferredAuthentications=publickey -i #{self.gui_ssh_key}' "
       else
         rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
       end
@@ -416,8 +422,7 @@ module Strongspace::Command
         local_source_path = "#{local_source_path}/"
       end
 
-      rsync_command_string = "#{rsync_binary}  #{rsync_flags} #{local_source_path} #{strongspace.username}@#{strongspace.username}.strongspace.com:#{profile['strongspace_path']}/"
-      puts rsync_command_string
+      rsync_command_string = "#{rsync_binary}  #{rsync_flags} '#{local_source_path}' \"#{strongspace.username}@#{strongspace.username}.strongspace.com:'#{profile['strongspace_path']}'\""
 
       puts "Excludes: #{profile['excludes']}" if DEBUG
 
@@ -433,18 +438,12 @@ module Strongspace::Command
     def source_changed?(profile_name, profile)
       digest = recursive_digest(profile['local_source_path'])
       #digest.update(profile.hash.rto_s) # also consider config changes
-      changed = (existing_source_hash(profile_name).strip != digest.to_s.strip)
+      changed = profile['last_successful_backup_hash'] != digest.to_s.strip
       if changed
         return digest
       else
         return nil
       end
-    end
-
-    def write_successful_backup_hash(profile_name, digest)
-      file = File.new(source_hash_file(profile_name), "w+")
-      file.puts "#{digest}"
-      file.close
     end
 
     def recursive_digest(path)
@@ -461,79 +460,7 @@ module Strongspace::Command
       return digest
     end
 
-    def existing_source_hash(profile_name)
-      if File.exist?(source_hash_file(profile_name))
-        f = File.open(source_hash_file(profile_name))
-        existing_hash = f.gets
-        f.close
-        return existing_hash
-      end
 
-      return ""
-    end
-
-
-    def profiles(reload=false)
-      return @profiles if (!reload and @profiles)
-
-      begin
-        config = YAML::load_file(configuration_file)
-        config_version = config['config_version']
-        config.reject! {|k,v| k == 'config_version'}
-      rescue
-        return {}
-      end
-
-      if config_version != VERSION
-        save_profiles({'default' => config})
-        return profiles
-      end
-
-      @profiles = config['profiles']
-    end
-
-    def save_profiles(new_profiles)
-      File.open(configuration_file, 'w+' ) do |out|
-        YAML.dump({'config_version' => VERSION, 'profiles' => new_profiles}, out)
-      end
-    end
-
-    def log_file
-      "#{logs_folder}/#{command_name}.log"
-    end
-
-    def logs_folder
-      if running_on_a_mac?
-        "#{home_directory}/Library/Logs/Strongspace"
-      else
-        "#{support_directory}/logs"
-      end
-    end
-
-    def launchd_plist_file(profile_name)
-      "#{launchd_agents_folder}/com.strongspace.#{command_name_with_profile_name(profile_name)}.plist"
-    end
-
-    def source_hash_file(profile_name)
-      "#{support_directory}/#{command_name_with_profile_name(profile_name)}.lastbackup"
-    end
-
-    def configuration_file
-      "#{support_directory}/#{command_name}.config"
-    end
-
-    def rsync_binary
-      "rsync"
-      #"#{support_directory}/bin/rsync"
-    end
-
-    def default_backup_path
-      "#{home_directory}/Documents"
-    end
-
-    def default_space
-      "backup"
-    end
 
   end
 end
