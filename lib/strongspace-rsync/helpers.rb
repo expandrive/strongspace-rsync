@@ -25,8 +25,15 @@ module StrongspaceRsync
     end
 
     def rsync_binary
-      "rsync"
-      #"/opt/local/bin/rsync"
+      if File.exist? "#{support_directory}/bin/rsync"
+        "#{support_directory}/bin/rsync"
+      elsif File.exist? "/opt/local/bin/rsync"
+        "/opt/local/bin/rsync"
+      elsif File.exist? "/usr/bin/rsync"
+          "/usr/bin/rsync"
+      else
+        "rsync"
+      end
     end
 
     def default_backup_path
