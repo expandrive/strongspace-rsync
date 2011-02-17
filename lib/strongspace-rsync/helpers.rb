@@ -25,6 +25,14 @@ module StrongspaceRsync
     end
 
     def rsync_binary
+      if running_on_windows?
+        if File.exist? "#{support_directory}\\bin\\rsync.exe"
+          return "#{support_directory}\\bin\\rsync.exe"
+        else
+          return "rsync.exe"
+        end
+      end
+
       if File.exist? "#{support_directory}/bin/rsync"
         "#{support_directory}/bin/rsync"
       elsif File.exist? "/opt/local/bin/rsync"
