@@ -2,7 +2,7 @@ $:.unshift File.expand_path("../lib", __FILE__)
 
 Gem::Specification.new do |gem|
   gem.name    = "strongspace-rsync"
-  gem.version = "0.3.5"
+  gem.version = "0.3.7"
 
   gem.author   = "Strongspace"
   gem.email    = "support@strongspace.com"
@@ -21,5 +21,5 @@ Gem::Specification.new do |gem|
   gem.add_development_dependency "rspec",   "~> 1.3.0"
   gem.add_development_dependency "webmock", "~> 1.5.0"
   gem.add_development_dependency "ruby-fsevent"
-  gem.add_development_dependency "strongspace", "~> #{StrongspaceRsync::VERSION}"
+  gem.add_development_dependency "strongspace", "~> 0.3.7"
 end
