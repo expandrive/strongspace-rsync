@@ -1,3 +1,6 @@
+require 'socket'
+require 'POpen4'
+
 module Strongspace::Command
   DEBUG = false
 
@@ -147,8 +150,8 @@ module Strongspace::Command
       bytesCounter = bytesUploaded
 
       while true do
-        status = Open4::popen4(rsync_command(profile_name)) do
-          |pid, stdin, stdout, stderr|
+        status = POpen4::popen4(rsync_command(profile_name)) do
+          |stdout, stderr, stdin, pid|
 
           display "\n\nStarting Strongspace Backup: #{Time.now}"
           display "rsync command:\n\t#{rsync_command(profile_name)}"
@@ -549,6 +552,8 @@ module Strongspace::Command
       if !File.exist? configuration_file
         Strongspace::Command.run_internal("rsync:create", ["Desktop", "#{home_directory}/Desktop"])
         Strongspace::Command.run_internal("rsync:create", ["Documents", "#{home_directory}/Documents"])
+        Strongspace::Command.run_internal("rsync:create", ["Music", "#{home_directory}/Music"])
+        Strongspace::Command.run_internal("rsync:create", ["Pictures", "#{home_directory}/Pictures"])
         Strongspace::Command.run_internal("rsync:create", ["Dropbox", "#{home_directory}/Dropbox"]) if File.exist? "#{home_directory}/Dropbox"
       end
     end
@@ -564,22 +569,30 @@ module Strongspace::Command
 
       display "Creating a new strongspace backup profile named #{args.first}"
 
-      if args[1].blank? and args[2].blank?
+      if args[1].blank?
         # Source
-        display "Location to backup [#{default_backup_path}]: ", false
-        location = ask(default_backup_path)
+        display "Location to backup [#{default_backup_path.normalize_pathslash}]: ", false
+        location = ask(default_backup_path.normalize_pathslash)
         location = Pathname(location).cleanpath.to_s
-        # Destination
-        display "Strongspace destination [/strongspace/#{strongspace.username}/#{computername}#{location}]: ", false
-        dest = ask("/strongspace/#{strongspace.username}/#{computername}#{location}")
+
+        if running_on_windows?
+          mLocation = "/#{location[0..0].upcase}/#{location[3..-1].gsub("\\","/")}"
+          display "Strongspace destination [/strongspace/#{strongspace.username}/#{computername}#{mLocation}]: ", false
+          dest = ask("/strongspace/#{strongspace.username}/#{computername}#{mLocation}")
+        else
+          display "Strongspace destination [/strongspace/#{strongspace.username}/#{computername}#{location}]: ", false
+          dest = ask("/strongspace/#{strongspace.username}/#{computername}#{location}")
+        end
+
+        location = location.to_cygpath if running_on_windows?
       else
         location = args[1]
         location = Pathname(location).cleanpath.to_s
-        if args[2]
-          dest = args[2]
-        else
-          dest = "/strongspace/#{strongspace.username}/#{computername}#{location}"
-        end
+
+        mLocation = "/#{location[0..0].upcase}/#{location[3..-1].gsub("\\","/")}"
+
+        dest = "/strongspace/#{strongspace.username}/#{computername}#{mLocation}"
+        location = location.to_cygpath if running_on_windows?
       end
 
       _profiles.each do |profile|
@@ -613,10 +626,17 @@ module Strongspace::Command
     end
 
     def rsync_command(profile_name)
-      if File.exist? self.gui_ssh_key
-        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1 -o UserKnownHostsFile=#{credentials_folder}/known_hosts -o PreferredAuthentications=publickey -i #{self.gui_ssh_key}' "
+
+      if running_on_windows? #cygwin's ssh.exe is sometimes barfing on name resolution, odd.
+        remote_ip = Socket.getaddrinfo("#{strongspace.username}.strongspace.com", nil)[0][2]
       else
-        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
+        remote_ip = "#{strongspace.username}.strongspace.com"
+      end
+
+      if File.exist? self.gui_ssh_key
+        rsync_flags = "-e '#{ssh_binary} -oServerAliveInterval=3 -oServerAliveCountMax=1 -o UserKnownHostsFile=#{credentials_folder.to_cygpath}/known_hosts -o PreferredAuthentications=publickey -i \"#{self.gui_ssh_key.to_cygpath}\"' "
+      else
+        rsync_flags = "-e '#{ssh_binary} -oServerAliveInterval=3 -oServerAliveCountMax=1' "
       end
       rsync_flags << "-avz -P "
       rsync_flags << "--delete " unless profile_value(profile_name, 'keep_remote_files')
@@ -627,7 +647,7 @@ module Strongspace::Command
         local_source_path = "#{local_source_path}/"
       end
 
-      rsync_command_string = "#{rsync_binary}  #{rsync_flags} '#{local_source_path}' \"#{strongspace.username}@#{strongspace.username}.strongspace.com:'#{profile_value(profile_name, 'strongspace_path')}'\""
+      rsync_command_string = "#{rsync_binary}  #{rsync_flags} '#{local_source_path}' \"#{strongspace.username}@#{remote_ip}:'#{profile_value(profile_name, 'strongspace_path')}'\""
 
       puts "Excludes: #{profile['excludes']}" if DEBUG
 
@@ -645,11 +665,16 @@ module Strongspace::Command
         Strongspace::Command.run_internal("keys:generate_for_gui",[])
       end
 
+      if running_on_windows? #cygwin's ssh.exe is sometimes barfing on name resolution, odd.
+        remote_ip = Socket.getaddrinfo("#{strongspace.username}.strongspace.com", nil)[0][2]
+      else
+        remote_ip = "#{strongspace.username}.strongspace.com"
+      end
 
       if File.exist? self.gui_ssh_key
-        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1 -o UserKnownHostsFile=#{credentials_folder}/known_hosts -o PreferredAuthentications=publickey -i #{self.gui_ssh_key}' "
+        rsync_flags = "-e '#{ssh_binary} -oServerAliveInterval=3 -oServerAliveCountMax=1 -o UserKnownHostsFile=#{credentials_folder.to_cygpath}/known_hosts -o PreferredAuthentications=publickey -i \"#{self.gui_ssh_key.to_cygpath}\"' "
       else
-        rsync_flags = "-e 'ssh -oServerAliveInterval=3 -oServerAliveCountMax=1' "
+        rsync_flags = "-e '#{ssh_binary} -oServerAliveInterval=3 -oServerAliveCountMax=1' "
       end
       rsync_flags << "-az --stats --dry-run "
       rsync_flags << "--delete " unless profile_value(profile_name, 'keep_remote_files')
@@ -660,7 +685,7 @@ module Strongspace::Command
         local_source_path = "#{local_source_path}/"
       end
 
-      rsync_command_string = "#{rsync_binary}  #{rsync_flags} '#{local_source_path}' \"#{strongspace.username}@#{strongspace.username}.strongspace.com:'#{profile_value(profile_name, 'strongspace_path')}'\""
+      rsync_command_string = "#{rsync_binary}  #{rsync_flags} '#{local_source_path}' \"#{strongspace.username}@#{remote_ip}:'#{profile_value(profile_name, 'strongspace_path')}'\""
 
       puts "Excludes: #{profile['excludes']}" if DEBUG
 
