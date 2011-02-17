@@ -95,7 +95,8 @@ module Strongspace::Command
       if profile_value(profile_name, 'last_successful_backup').blank?
         validate_destination_space(profile_value(profile_name, 'strongspace_path').split("/")[3], create=true)
         begin
-          strongspace.mkdir("/#{strongspace.username}/#{computername}#{profile_value(profile_name, 'local_source_path')}")
+          strongspace.mkdir("#{profile_value(profile_name, 'strongspace_path')[12..-1]}")
+
         rescue RestClient::Conflict => e
         end
 
