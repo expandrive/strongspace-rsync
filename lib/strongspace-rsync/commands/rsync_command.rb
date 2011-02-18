@@ -104,12 +104,23 @@ module Strongspace::Command
         end
 
         if profile_value(profile_name, 'last_successful_backup').blank?
-          total_bytes = `du -ks '#{profile_value(profile_name, 'local_source_path')}'`.split("\t")[0].to_i * 1024
+          if running_on_windows?
+            total_bytes_command = "#{support_directory}\\bin\\du.exe -ks '#{profile_value(profile_name, 'local_source_path')[9..-1]}'"
+            total_bytes = `#{total_bytes_command}`.split("\t")[0].to_i * 1024
+            puts total_bytes_command
+          else
+            total_bytes = `du -ks '#{profile_value(profile_name, 'local_source_path')}'`.split("\t")[0].to_i * 1024
+          end
+
           set_profile_value(profile_name, total_bytes, 'local_source_size')
         end
 
       elsif not new_digest = source_changed?(profile_name)
-        launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
+        if running_on_windows?
+          launched_by = 'nothing'
+        else
+          launched_by = `ps #{Process.ppid}`.split("\n")[1].split(" ").last
+        end
 
         if not launched_by.ends_with?("launchd")
           display "backup target has not changed since last backup attempt."
@@ -280,11 +291,6 @@ module Strongspace::Command
         FileUtils.mkdir(logs_folder)
       end
 
-      if running_on_windows?
-        error "Scheduling currently isn't supported on Windows"
-        return
-      end
-
       if running_on_a_mac?
         plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
         <!DOCTYPE plist PUBLIC -//Apple Computer//DTD PLIST 1.0//EN
@@ -325,11 +331,11 @@ module Strongspace::Command
         </dict>
         </plist>"
 
-        file = File.new(launchd_plist_file(profile_name), "w+")
+        file = File.new(scheduled_launch_file(profile_name), "w+")
         file.puts plist
         file.close
 
-        r = `launchctl load -S aqua '#{launchd_plist_file(profile_name)}'`
+        r = `launchctl load -S aqua '#{scheduled_launch_file(profile_name)}'`
         if r.strip.ends_with?("Already loaded")
           error "This task is aready scheduled, unload before scheduling again"
           return
@@ -341,6 +347,17 @@ module Strongspace::Command
         Strongspace::Command.run_internal("spaces:schedule_snapshots", [profile['strongspace_path'].split("/")[3]])
 
         display "Scheduled #{profile_name} to be run continuously"
+      elsif running_on_windows?
+        vbs = "Set WshShell = CreateObject(\"WScript.Shell\")
+        WshShell.Run \"#{support_directory}\\ruby\\bin\\strongspace.bat rsync:run #{profile_name}\", 0
+        Set WshShell = Nothing"
+        file = File.new(scheduled_launch_file(profile_name), "w+")
+        file.puts vbs
+        file.close
+
+        r = `schtasks.exe /Create /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}" /mo 10 /sc minute /tr "#{scheduled_launch_file(profile_name).gsub('/', '\\')}"`
+        `schtasks.exe /Run /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
+
       else  # Assume we're running on linux/unix
         begin
           CronEdit::Crontab.Add  "strongspace-#{command_name}-#{profile_name}", "0,5,10,15,20,25,30,35,40,45,52,53,55 * * * * #{$PROGRAM_NAME} rsync:run #{profile_name} >> #{log_file} 2>&1"
@@ -363,15 +380,17 @@ module Strongspace::Command
         return false
       end
 
-      if running_on_windows?
-        error "Scheduling currently isn't supported on Windows"
-        return
-      end
-
       if running_on_a_mac?
-        if File.exist? launchd_plist_file(profile_name)
-          `launchctl unload '#{launchd_plist_file(profile_name)}'`
-          FileUtils.rm(launchd_plist_file(profile_name))
+        if File.exist? scheduled_launch_file(profile_name)
+          `launchctl unload '#{scheduled_launch_file(profile_name)}'`
+          FileUtils.rm(scheduled_launch_file(profile_name))
+          profile['active'] = false
+          update_profile(profile_name, profile)
+        end
+      elsif running_on_windows?
+        if File.exist? scheduled_launch_file(profile_name)
+          `schtasks.exe /Delete /f /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
+          FileUtils.rm(scheduled_launch_file(profile_name))
           profile['active'] = false
           update_profile(profile_name, profile)
         end
@@ -393,14 +412,15 @@ module Strongspace::Command
         return false
       end
 
-      if running_on_windows?
-        error "Scheduling currently isn't supported on Windows"
-        return
-      end
 
       if running_on_a_mac?
-        if File.exist? launchd_plist_file(profile_name)
+        if File.exist? scheduled_launch_file(profile_name)
           `launchctl stop 'com.strongspace.#{command_name_with_profile_name(profile_name)}'`
+        end
+      elsif running_on_windows?
+        if File.exist? scheduled_launch_file(profile_name)
+          `schtasks.exe /End /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
+          `schtasks.exe /Change /DISABLE /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
         end
       end
 
@@ -416,14 +436,14 @@ module Strongspace::Command
         return false
       end
 
-      if running_on_windows?
-        error "Scheduling currently isn't supported on Windows"
-        return
-      end
-
       if running_on_a_mac?
-        if File.exist? launchd_plist_file(profile_name)
+        if File.exist? scheduled_launch_file(profile_name)
           `launchctl start 'com.strongspace.#{command_name_with_profile_name(profile_name)}'`
+        end
+      elsif running_on_windows?
+        if File.exist? scheduled_launch_file(profile_name)
+          `schtasks.exe /Change /ENABLE /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
+          `schtasks.exe /Run /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}"`
         end
       end
 
@@ -440,14 +460,21 @@ module Strongspace::Command
         return false
       end
 
-      r = `launchctl list 'com.strongspace.#{command_name}.#{profile_name}' 2>&1`
-
-      if r.ends_with?("unknown response\n")
-        return false
-      else
-        return true
+      if running_on_a_mac?
+        r = `launchctl list 'com.strongspace.#{command_name}.#{profile_name}' 2>&1`
+        if !r.ends_with?("unknown response\n")
+          return true
+        end
+      elsif running_on_windows?
+        r = `schtasks.exe /Query /nh /tn "com.strongspace.#{command_name_with_profile_name(profile_name)}" 2>&1`
+        if !r.starts_with?("ERROR:")
+          puts "scheduled"
+          puts r
+          return true
+        end
       end
 
+      return false
     end
 
     def pause_all
@@ -700,7 +727,7 @@ module Strongspace::Command
 
 
     def source_changed?(profile_name)
-      digest = recursive_digest(profile_value(profile_name, 'local_source_path'))
+      digest = recursive_digest(profile_value(profile_name, 'local_source_path').from_cygpath)
 
       changed = profile_value(profile_name, 'last_successful_backup_hash') != digest.to_s.strip
       if changed

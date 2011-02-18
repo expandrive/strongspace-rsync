@@ -12,8 +12,12 @@ module StrongspaceRsync
       end
     end
 
-    def launchd_plist_file(profile_name)
-      "#{launchd_agents_folder}/com.strongspace.#{command_name_with_profile_name(profile_name)}.plist"
+    def scheduled_launch_file(profile_name)
+      if running_on_a_mac?
+        "#{launch_files_folder}/com.strongspace.#{command_name_with_profile_name(profile_name)}.plist"
+      elsif running_on_windows?
+        "#{launch_files_folder}/com.strongspace.#{command_name_with_profile_name(profile_name)}.vbs"
+      end
     end
 
     def source_hash_file(profile_name)
